@@ -77,11 +77,12 @@ const mockSegments: StoryboardSegment[] = [
 ]
 
 export function cloneAnalysisResult(result: VideoAnalysisResult): VideoAnalysisResult {
-  const product = readAnalysisProduct(result)
+  const products = readAnalysisProducts(result)
   return {
     ...result,
     source: { ...result.source },
-    product: product ? { ...product } : undefined,
+    products: products.map((product) => ({ ...product })),
+    product: products[0] ? { ...products[0] } : undefined,
     segments: result.segments.map(cloneSegment),
   }
 }
@@ -96,10 +97,12 @@ function cloneSegment(segment: StoryboardSegment): StoryboardSegment {
   }
 }
 
-function readAnalysisProduct(result: VideoAnalysisResult): MediaReference | undefined {
-  if (result.product) return result.product
+function readAnalysisProducts(result: VideoAnalysisResult): MediaReference[] {
+  if (result.products?.length) return result.products
+  if (result.product) return [result.product]
   const legacySegments = result.segments as Array<StoryboardSegment & { product?: MediaReference }>
-  return legacySegments.find((segment) => segment.product)?.product
+  const legacyProduct = legacySegments.find((segment) => segment.product)?.product
+  return legacyProduct ? [legacyProduct] : []
 }
 
 function readSegmentCharacters(segment: StoryboardSegment): MediaReference[] {
@@ -119,6 +122,7 @@ export function createMockAnalysis(
     sourceUrl,
     analyzedAt: new Date().toISOString(),
     origin,
+    products: [{ ...mockProduct }],
     product: { ...mockProduct },
     segments: cloneAnalysisResult({
       analysisId: 'template',

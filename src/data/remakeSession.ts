@@ -1,6 +1,7 @@
 import type { RemakeSource } from '../types'
 
 const REMAKE_SESSION_KEY = 'framecraft.remake-source.v2'
+export const REMAKE_SELECTION_EVENT = 'framecraft:remake-selection'
 
 function isRemakeSource(value: unknown): value is RemakeSource {
   if (typeof value !== 'object' || value === null) return false
@@ -15,6 +16,7 @@ function isRemakeSource(value: unknown): value is RemakeSource {
 
 export function saveRemakeSelection(source: RemakeSource): void {
   window.sessionStorage.setItem(REMAKE_SESSION_KEY, JSON.stringify(source))
+  window.dispatchEvent(new CustomEvent<RemakeSource>(REMAKE_SELECTION_EVENT, { detail: source }))
 }
 
 export function readRemakeSelection(): RemakeSource | null {

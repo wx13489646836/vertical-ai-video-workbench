@@ -1,7 +1,8 @@
 import type {
   AccountProfile,
+  ConsumptionRecord,
   HotRankingRecord,
-  QuotaUsageRecord,
+  RechargeRecord,
   VideoAnalysisLookupResult,
   VideoAnalysisResult,
   VideoHistoryRecord,
@@ -9,10 +10,11 @@ import type {
 } from '../types'
 import {
   accountProfile,
+  consumptionRecords,
   deleteVideoRecord,
   getVideoRecords,
   resetDemoRecords,
-  usageRecords,
+  rechargeRecords,
 } from './localData'
 import { getMockTrendingRankings, trendingIndustries } from './trendingCatalog'
 import type { TrendingDuration } from './trendingCatalog'
@@ -216,13 +218,22 @@ export class MockDataProvider implements DataProvider {
     return { ...accountProfile }
   }
 
-  async getQuotaUsages(
+  async getConsumptionRecords(
     cursor?: string | null,
     limit = 20,
     signal?: AbortSignal,
-  ): Promise<CursorPage<QuotaUsageRecord>> {
+  ): Promise<CursorPage<ConsumptionRecord>> {
     await waitForMock(signal)
-    return paginate([...usageRecords], cursor, limit)
+    return paginate([...consumptionRecords], cursor, limit)
+  }
+
+  async getRechargeRecords(
+    cursor?: string | null,
+    limit = 20,
+    signal?: AbortSignal,
+  ): Promise<CursorPage<RechargeRecord>> {
+    await waitForMock(signal)
+    return paginate([...rechargeRecords], cursor, limit)
   }
 
   async resetDemoHistory(): Promise<void> {

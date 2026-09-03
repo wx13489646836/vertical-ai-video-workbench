@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowRight,
+  CheckCircle2,
   Check,
   ChevronDown,
   ChevronRight,
   CircleUserRound,
+  CircleAlert,
   Clock3,
   Coins,
   Copy,
@@ -22,6 +24,7 @@ import {
   RotateCcw,
   SlidersHorizontal,
   ShoppingBag,
+  ShieldCheck,
   Trash2,
   UserRound,
   WalletCards,
@@ -55,11 +58,13 @@ import { useCursorList } from './hooks/useCursorList'
 import { WorkspacePage } from './workspace/WorkspacePage'
 import type {
   AccountProfile,
+  ConsumptionRecord,
   GenerationStatus,
   HotRankingRecord,
   HistoryReplacementMapping,
   MediaReference,
-  QuotaUsageRecord,
+  RechargeRecord,
+  RechargeRecordStatus,
   VideoHistoryRecord,
 } from './types'
 
@@ -70,16 +75,8 @@ const navItems = [
   { to: '/me', label: '我的', Icon: UserRound },
 ] as const
 
-function formatDateTime(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-    .format(new Date(value))
-    .replace('/', '.')
+function formatFen(value: number): string {
+  return (value / 100).toFixed(2)
 }
 
 function formatHistoryDateTime(value: string): string {
@@ -97,6 +94,21 @@ function formatHistoryDateTime(value: string): string {
   return `${readPart('year')}.${readPart('month')}.${readPart('day')} ${readPart('hour')}:${readPart('minute')}`
 }
 
+function formatLedgerDateTime(value: string): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(value))
+  const readPart = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  return `${readPart('year')}-${readPart('month')}-${readPart('day')} ${readPart('hour')}:${readPart('minute')}:${readPart('second')}`
+}
+
 function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60)
   const remainder = seconds % 60
@@ -106,6 +118,8 @@ function formatDuration(seconds: number): string {
 function AppShell() {
   const location = useLocation()
   const contentRef = useRef<HTMLElement>(null)
+  const standalonePage = location.pathname === '/payment-result'
+  const workspaceActive = location.pathname === '/workspace'
 
   useLayoutEffect(() => {
     const content = contentRef.current
@@ -120,32 +134,38 @@ function AppShell() {
         className="app-content"
         ref={contentRef}
       >
+        <div hidden={!workspaceActive}>
+          <WorkspacePage isActive={workspaceActive} />
+        </div>
         <Routes>
-          <Route path="/workspace" element={<WorkspacePage />} />
+          <Route path="/workspace" element={null} />
           <Route path="/trending" element={<TrendingPage />} />
           <Route path="/history" element={<HistoryPage />} />
-          <Route path="/me" element={<ProfilePage />} />
+          <Route path="/me" element={<ProfilePage key={location.key} />} />
+          <Route path="/payment-result" element={<PaymentResultPage />} />
           <Route path="*" element={<Navigate to="/workspace" replace />} />
         </Routes>
       </main>
-      <nav className="bottom-nav" aria-label="主导航">
-        <div className="bottom-nav__inner">
-          {navItems.map(({ to, label, Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                `bottom-nav__item${isActive ? ' is-active' : ''}`
-              }
-            >
-              <span className="bottom-nav__icon">
-                <Icon size={22} strokeWidth={1.9} aria-hidden="true" />
-              </span>
-              <span>{label}</span>
-            </NavLink>
-          ))}
-        </div>
-      </nav>
+      {!standalonePage && (
+        <nav className="bottom-nav" aria-label="主导航">
+          <div className="bottom-nav__inner">
+            {navItems.map(({ to, label, Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `bottom-nav__item${isActive ? ' is-active' : ''}`
+                }
+              >
+                <span className="bottom-nav__icon">
+                  <Icon size={22} strokeWidth={1.9} aria-hidden="true" />
+                </span>
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </div>
+        </nav>
+      )}
     </div>
   )
 }
@@ -512,6 +532,59 @@ function PaginationControl({
       </button>
     </div>
   )
+}
+
+function InfiniteScrollControl({
+  hasMore,
+  loading,
+  error,
+  onLoadMore,
+}: {
+  hasMore: boolean
+  loading: boolean
+  error: string | null
+  onLoadMore: () => void
+}) {
+  const sentinelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel || !hasMore || loading || error) return
+
+    const scrollRoot = sentinel.closest<HTMLElement>('.app-content')
+    const scrollTarget: HTMLElement | Window = scrollRoot ?? window
+    let animationFrame = 0
+    let triggered = false
+
+    const handleScroll = () => {
+      if (animationFrame || triggered) return
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = 0
+        const rootBottom = scrollRoot?.getBoundingClientRect().bottom ?? window.innerHeight
+        if (sentinel.getBoundingClientRect().top <= rootBottom + 160) {
+          triggered = true
+          onLoadMore()
+        }
+      })
+    }
+
+    scrollTarget.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      scrollTarget.removeEventListener('scroll', handleScroll)
+      if (animationFrame) window.cancelAnimationFrame(animationFrame)
+    }
+  }, [error, hasMore, loading, onLoadMore])
+
+  if (error) {
+    return (
+      <div className="pagination-control" ref={sentinelRef}>
+        <p role="alert">{error}</p>
+        <button type="button" onClick={onLoadMore}>重试加载更多</button>
+      </div>
+    )
+  }
+  if (!hasMore) return <div className="pagination-end" ref={sentinelRef}>— 已加载全部 —</div>
+  return <div className="pagination-end" ref={sentinelRef}>{loading ? '加载中…' : '继续下滑加载更多'}</div>
 }
 
 function TrendListItem({
@@ -1177,30 +1250,226 @@ function ProfileAvatar({ profile }: { profile: AccountProfile }) {
   )
 }
 
-function ProfilePage() {
-  const loadAccount = useCallback((signal: AbortSignal) => dataProvider.getAccountSummary(signal), [])
-  const account = useAsyncResource(loadAccount)
-  const loadUsagePage = useCallback(
-    (cursor: string | null, signal: AbortSignal) => dataProvider.getQuotaUsages(cursor, 20, signal),
+const rechargePlans = [
+  { amount: 20, label: '轻量补充' },
+  { amount: 50, label: '日常使用' },
+  { amount: 100, label: '高频创作' },
+  { amount: 200, label: '批量制作' },
+] as const
+
+function RechargeSheet({
+  selectedAmount,
+  onSelect,
+  onClose,
+  onPay,
+}: {
+  selectedAmount: number | null
+  onSelect: (amount: number | null) => void
+  onClose: () => void
+  onPay: () => void
+}) {
+  const [customOpen, setCustomOpen] = useState(false)
+  const [customValue, setCustomValue] = useState('')
+  const customInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  useEffect(() => {
+    if (customOpen) customInputRef.current?.focus()
+  }, [customOpen])
+
+  const handleCustomAmount = (value: string) => {
+    if (!/^\d{0,5}(?:\.\d{0,2})?$/.test(value)) return
+    setCustomValue(value)
+    const amount = Number(value)
+    onSelect(Number.isFinite(amount) && amount > 0 ? amount : null)
+  }
+
+  return (
+    <div className="sheet-backdrop recharge-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose()
+    }}>
+      <section className="bottom-sheet recharge-sheet" role="dialog" aria-modal="true" aria-labelledby="recharge-title">
+        <span className="bottom-sheet__handle" aria-hidden="true" />
+        <header className="recharge-sheet__header">
+          <div>
+            <span>ACCOUNT TOP-UP</span>
+            <h2 id="recharge-title">选择充值额度</h2>
+          </div>
+          <button type="button" aria-label="关闭充值弹窗" onClick={onClose}><X size={19} /></button>
+        </header>
+
+        <div className="recharge-options" role="radiogroup" aria-label="充值额度">
+          {rechargePlans.map((plan) => {
+            const selected = !customOpen && selectedAmount === plan.amount
+            return (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={selected ? 'is-selected' : undefined}
+                key={plan.amount}
+                onClick={() => {
+                  setCustomOpen(false)
+                  setCustomValue('')
+                  onSelect(plan.amount)
+                }}
+              >
+                <strong><small>¥</small>{plan.amount}</strong>
+                <span>{plan.label}</span>
+                {selected && <Check size={14} strokeWidth={3} aria-hidden="true" />}
+              </button>
+            )
+          })}
+        </div>
+
+        {customOpen ? (
+          <label className="custom-recharge-field">
+            <span>自定义金额</span>
+            <div>
+              <b>¥</b>
+              <input
+                ref={customInputRef}
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                aria-label="输入自定义充值金额"
+                placeholder="请输入金额"
+                value={customValue}
+                onChange={(event) => handleCustomAmount(event.target.value)}
+              />
+              <small>元</small>
+            </div>
+          </label>
+        ) : (
+          <button
+            type="button"
+            className="custom-recharge-trigger"
+            onClick={() => {
+              setCustomOpen(true)
+              setCustomValue('')
+              onSelect(null)
+            }}
+          >
+            <span>自定义填写金额</span>
+            <ArrowRight size={16} aria-hidden="true" />
+          </button>
+        )}
+
+        <div className="recharge-sheet__summary">
+          <span>本次支付</span>
+          <strong>¥{selectedAmount === null ? '--' : selectedAmount.toFixed(2)}</strong>
+        </div>
+        <button type="button" className="recharge-pay-button" disabled={selectedAmount === null} onClick={onPay}>
+          立即支付{selectedAmount === null ? '' : `\u00a0 ¥${selectedAmount}`}
+        </button>
+        <p className="recharge-sheet__hint">支付能力将在接入微信支付后开放</p>
+      </section>
+    </div>
+  )
+}
+
+function ConsumptionLedger() {
+  const loadPage = useCallback(
+    (cursor: string | null, signal: AbortSignal) => dataProvider.getConsumptionRecords(cursor, 10, signal),
     [],
   )
-  const usage = useCursorList(loadUsagePage)
-  const usageGroups = useMemo(() => {
-    const groups = new Map<string, QuotaUsageRecord[]>()
-    usage.items.forEach((record) => {
-      const key = new Intl.DateTimeFormat('zh-CN', {
-        year: 'numeric',
-        month: 'long',
-      }).format(new Date(record.occurredAt))
-      groups.set(key, [...(groups.get(key) ?? []), record])
-    })
-    return [...groups.entries()]
-  }, [usage.items])
+  const records = useCursorList(loadPage)
+
+  if (records.status === 'loading') return <ListSkeleton variant="usage" count={4} />
+  if (records.status === 'error') {
+    return <DataState title="消耗记录加载失败" message={records.error ?? '请稍后重试'} onRetry={records.reload} />
+  }
+  if (records.status === 'empty') return <DataState title="暂无消耗记录" message="使用服务后会显示扣费明细。" />
+
+  return (
+    <>
+      <div className="consumption-ledger">
+        <div className="consumption-ledger__head" aria-hidden="true">
+          <span>时间</span><span>金额</span><span>类型</span><span>结余</span>
+        </div>
+        {records.items.map((record: ConsumptionRecord) => (
+          <div className="consumption-ledger__row" key={record.id}>
+            <time dateTime={record.occurredAt}>{formatLedgerDateTime(record.occurredAt)}</time>
+            <strong>−{formatFen(record.amountFen)}</strong>
+            <span>{record.typeLabel}</span>
+            <b>{formatFen(record.balanceAfterFen)}</b>
+          </div>
+        ))}
+      </div>
+      <InfiniteScrollControl
+        hasMore={Boolean(records.nextCursor)}
+        loading={records.loadingMore}
+        error={records.loadMoreError}
+        onLoadMore={records.loadMore}
+      />
+    </>
+  )
+}
+
+const rechargeStatusLabels: Record<RechargeRecordStatus, string> = {
+  pending: '处理中',
+  credited: '已到账',
+  failed: '失败',
+  closed: '已关闭',
+}
+
+function RechargeLedger() {
+  const loadPage = useCallback(
+    (cursor: string | null, signal: AbortSignal) => dataProvider.getRechargeRecords(cursor, 10, signal),
+    [],
+  )
+  const records = useCursorList(loadPage)
+
+  if (records.status === 'loading') return <ListSkeleton variant="usage" count={3} />
+  if (records.status === 'error') {
+    return <DataState title="充值记录加载失败" message={records.error ?? '请稍后重试'} onRetry={records.reload} />
+  }
+  if (records.status === 'empty') return <DataState title="暂无充值记录" message="创建充值订单后会显示订单状态。" />
+
+  return (
+    <>
+      <div className="recharge-ledger">
+        {records.items.map((record: RechargeRecord) => (
+          <article className="recharge-ledger__item" key={record.id}>
+            <div className="recharge-ledger__order">
+              <div><span>商户订单号</span><strong>{record.merchantOrderId}</strong></div>
+              <em className={`is-${record.status}`}>{rechargeStatusLabels[record.status]}</em>
+            </div>
+            <dl>
+              <div><dt>创建时间</dt><dd>{formatLedgerDateTime(record.createdAt)}</dd></div>
+              <div><dt>金额</dt><dd className="amount">¥{formatFen(record.amountFen)}</dd></div>
+              <div><dt>到账时间</dt><dd>{record.creditedAt ? formatLedgerDateTime(record.creditedAt) : '--'}</dd></div>
+              <div><dt>操作</dt><dd>{record.actionLabel ?? '--'}</dd></div>
+              <div className="description"><dt>说明</dt><dd>{record.description}</dd></div>
+            </dl>
+          </article>
+        ))}
+      </div>
+      <InfiniteScrollControl
+        hasMore={Boolean(records.nextCursor)}
+        loading={records.loadingMore}
+        error={records.loadMoreError}
+        onLoadMore={records.loadMore}
+      />
+    </>
+  )
+}
+
+function ProfilePage() {
+  const navigate = useNavigate()
+  const [ledgerTab, setLedgerTab] = useState<'recharge' | 'consumption'>('consumption')
+  const [rechargeOpen, setRechargeOpen] = useState(false)
+  const [selectedRechargeAmount, setSelectedRechargeAmount] = useState<number | null>(50)
+  const loadAccount = useCallback((signal: AbortSignal) => dataProvider.getAccountSummary(signal), [])
+  const account = useAsyncResource(loadAccount)
   const profile = account.data
-  const totalQuota = profile ? profile.quotaRemaining + profile.quotaUsedThisMonth : 0
-  const usedPercentage = profile && totalQuota > 0
-    ? Math.round((profile.quotaUsedThisMonth / totalQuota) * 100)
-    : 0
 
   return (
     <section className="page profile-page">
@@ -1226,24 +1495,9 @@ function ProfilePage() {
                 <span><WalletCards size={15} />账户余额</span>
                 <strong><small>¥</small>{(profile.balanceFen / 100).toFixed(2)}</strong>
               </div>
-              <div className="quota-dial" style={{ '--quota': `${usedPercentage * 3.6}deg` } as React.CSSProperties}>
-                <span>{usedPercentage}<small>%</small></span>
-              </div>
-            </div>
-            <div className="balance-panel__divider" />
-            <div className="quota-stats">
-              <div>
-                <span>剩余额度</span>
-                <strong>{profile.quotaRemaining}<small> 次</small></strong>
-              </div>
-              <div>
-                <span>本月已用</span>
-                <strong>{profile.quotaUsedThisMonth}<small> 次</small></strong>
-              </div>
-              <div>
-                <span>总额度</span>
-                <strong>{totalQuota}<small> 次</small></strong>
-              </div>
+              <button type="button" className="recharge-button" onClick={() => setRechargeOpen(true)}>
+                <Coins size={15} aria-hidden="true" />充值
+              </button>
             </div>
           </article>
         </>
@@ -1253,51 +1507,121 @@ function ProfilePage() {
         <div className="section-title-row">
           <div>
             <p className="eyebrow">USAGE LOG</p>
-            <h2>额度消耗记录</h2>
+            <h2>额度记录</h2>
           </div>
-          <span>最近 30 天</span>
         </div>
 
-        {usage.status === 'loading' && <ListSkeleton variant="usage" count={4} />}
-        {usage.status === 'error' && (
-          <DataState title="额度记录加载失败" message={usage.error ?? '请稍后重试'} onRetry={usage.reload} />
-        )}
-        {usage.status === 'empty' && (
-          <DataState title="暂无额度记录" message="发生额度消耗或返还后会显示在这里。" />
-        )}
-        {usage.status === 'success' && (
-          <>
-            {usageGroups.map(([month, records]) => (
-              <div className="usage-group" key={month}>
-                <p className="usage-group__month">{month}</p>
-                <div className="usage-list">
-                  {records.map((record) => (
-                    <div className="usage-row" key={record.id}>
-                      <div className={`usage-row__marker ${record.status}`}>
-                        {record.status === 'refunded' ? <RotateCcw size={15} /> : <Film size={15} />}
-                      </div>
-                      <div className="usage-row__info">
-                        <strong>{record.taskTitle}</strong>
-                        <span>{formatDateTime(record.occurredAt)}</span>
-                      </div>
-                      <div className={`usage-row__amount ${record.status}`}>
-                        <strong>{record.status === 'refunded' ? '+' : '−'}{record.amount}</strong>
-                        <span>{record.status === 'refunded' ? '已返还' : '已消耗'}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-            <PaginationControl
-              hasMore={Boolean(usage.nextCursor)}
-              loading={usage.loadingMore}
-              error={usage.loadMoreError}
-              onLoadMore={usage.loadMore}
-            />
-          </>
-        )}
+        <div className="ledger-tabs" role="tablist" aria-label="额度记录类型">
+          <button type="button" role="tab" aria-selected={ledgerTab === 'consumption'} className={ledgerTab === 'consumption' ? 'is-active' : undefined} onClick={() => setLedgerTab('consumption')}>消耗</button>
+          <button type="button" role="tab" aria-selected={ledgerTab === 'recharge'} className={ledgerTab === 'recharge' ? 'is-active' : undefined} onClick={() => setLedgerTab('recharge')}>充值</button>
+        </div>
+        <div className="ledger-panel" role="tabpanel">
+          {ledgerTab === 'recharge' ? <RechargeLedger /> : <ConsumptionLedger />}
+        </div>
       </section>
+      {rechargeOpen && (
+        <RechargeSheet
+          selectedAmount={selectedRechargeAmount}
+          onSelect={setSelectedRechargeAmount}
+          onClose={() => setRechargeOpen(false)}
+          onPay={() => {
+            if (selectedRechargeAmount === null) return
+            const orderId = `CZ${Date.now()}`
+            const params = new URLSearchParams({
+              status: 'success',
+              amount: selectedRechargeAmount.toFixed(2),
+              orderId,
+              paidAt: new Date().toISOString(),
+            })
+            setRechargeOpen(false)
+            navigate(`/payment-result?${params.toString()}`)
+          }}
+        />
+      )}
+    </section>
+  )
+}
+
+type PaymentResultStatus = 'success' | 'pending' | 'failed'
+
+const paymentResultContent: Record<PaymentResultStatus, {
+  eyebrow: string
+  title: string
+  message: string
+}> = {
+  success: {
+    eyebrow: 'PAYMENT COMPLETE',
+    title: '充值成功',
+    message: '充值金额已提交到账，请返回商户页面继续使用。',
+  },
+  pending: {
+    eyebrow: 'PAYMENT VERIFYING',
+    title: '支付确认中',
+    message: '正在向服务端确认订单状态，请稍后返回账户查看。',
+  },
+  failed: {
+    eyebrow: 'PAYMENT INCOMPLETE',
+    title: '支付未完成',
+    message: '本次充值未完成，账户余额不会发生变化。',
+  },
+}
+
+function PaymentResultPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const params = useMemo(() => new URLSearchParams(location.search), [location.search])
+  const rawStatus = params.get('status')
+  const status: PaymentResultStatus = rawStatus === 'pending' || rawStatus === 'failed' ? rawStatus : 'success'
+  const parsedAmount = Number(params.get('amount'))
+  const amount = Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0
+  const orderId = params.get('orderId')?.slice(0, 40) || '--'
+  const paidAtValue = params.get('paidAt')
+  const paidAt = paidAtValue && !Number.isNaN(Date.parse(paidAtValue))
+    ? formatHistoryDateTime(paidAtValue)
+    : '--'
+  const content = paymentResultContent[status]
+
+  return (
+    <section className={`page payment-result-page is-${status}`}>
+      <header className="payment-result__brand reveal">
+        <span>FRAMECRAFT / PAYMENT</span>
+        <strong>微信支付</strong>
+      </header>
+
+      <div className="payment-result__status reveal reveal-delay">
+        <div className="payment-result__status-icon" aria-hidden="true">
+          {status === 'success' ? <CheckCircle2 size={34} /> : <CircleAlert size={34} />}
+        </div>
+        <div>
+          <span>{content.eyebrow}</span>
+          <h1>{content.title}</h1>
+          <p>{content.message}</p>
+        </div>
+      </div>
+
+      <article className="payment-receipt reveal reveal-delay-2">
+        <div className="payment-receipt__amount">
+          <span>充值金额</span>
+          <strong><small>¥</small>{amount.toFixed(2)}</strong>
+        </div>
+        <dl>
+          <div><dt>商户订单号</dt><dd>{orderId}</dd></div>
+          <div><dt>支付方式</dt><dd>微信支付</dd></div>
+          <div><dt>支付时间</dt><dd>{paidAt}</dd></div>
+          <div><dt>订单状态</dt><dd className={`is-${status}`}>{content.title}</dd></div>
+        </dl>
+      </article>
+
+      <div className="payment-result__verification">
+        <ShieldCheck size={18} aria-hidden="true" />
+        <p><strong>安全核验</strong><span>真实支付结果以后端订单查询或微信支付回调为准。</span></p>
+      </div>
+
+      <div className="payment-result__actions">
+        <button type="button" onClick={() => navigate('/me', { replace: true })}>
+          返回商户页面 <ArrowRight size={17} aria-hidden="true" />
+        </button>
+      </div>
     </section>
   )
 }

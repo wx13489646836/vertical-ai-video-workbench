@@ -46,14 +46,25 @@ export interface AccountProfile {
   quotaUsedThisMonth: number
 }
 
-export type UsageStatus = 'consumed' | 'refunded'
-
-export interface QuotaUsageRecord {
+export interface ConsumptionRecord {
   id: string
   occurredAt: string
-  taskTitle: string
-  amount: number
-  status: UsageStatus
+  amountFen: number
+  typeLabel: string
+  balanceAfterFen: number
+}
+
+export type RechargeRecordStatus = 'pending' | 'credited' | 'failed' | 'closed'
+
+export interface RechargeRecord {
+  id: string
+  createdAt: string
+  merchantOrderId: string
+  amountFen: number
+  status: RechargeRecordStatus
+  creditedAt?: string
+  description: string
+  actionLabel?: string
 }
 
 export interface RemakeSource {
@@ -105,6 +116,7 @@ export interface VideoAnalysisResult {
   sourceUrl?: string
   analyzedAt: string
   origin: AnalysisOrigin
+  products?: MediaReference[]
   product?: MediaReference
   segments: StoryboardSegment[]
 }
@@ -117,6 +129,7 @@ export interface ProductReferenceImage {
   id: string
   fileName: string
   imageUrl: string
+  productSlot?: number
 }
 
 export interface ReplacementRequest {

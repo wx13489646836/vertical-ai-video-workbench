@@ -83,6 +83,23 @@ describe('MockDataProvider', () => {
     })
     expect(page.items.every((item) => item.durationSeconds <= 15)).toBe(true)
   })
+
+  it('paginates account ledgers in batches of ten', async () => {
+    const provider = new MockDataProvider()
+    const firstConsumptions = await provider.getConsumptionRecords(null, 10)
+    const remainingConsumptions = await provider.getConsumptionRecords(firstConsumptions.nextCursor, 10)
+    const firstRecharges = await provider.getRechargeRecords(null, 10)
+    const remainingRecharges = await provider.getRechargeRecords(firstRecharges.nextCursor, 10)
+
+    expect(firstConsumptions.items).toHaveLength(10)
+    expect(firstConsumptions.nextCursor).toBe('10')
+    expect(remainingConsumptions.items).toHaveLength(2)
+    expect(remainingConsumptions.nextCursor).toBeNull()
+    expect(firstRecharges.items).toHaveLength(10)
+    expect(firstRecharges.nextCursor).toBe('10')
+    expect(remainingRecharges.items).toHaveLength(1)
+    expect(remainingRecharges.nextCursor).toBeNull()
+  })
 })
 
 describe('HttpDataProvider', () => {
@@ -188,9 +205,15 @@ describe('HttpDataProvider', () => {
         avatarUrl: 'https://example.com/avatar.jpg', nickname: '用户', maskedPhone: '138 **** 0000',
         userId: 'user-1', balanceFen: 8650, quotaRemaining: 28, quotaUsedThisMonth: 12,
       },
-      '/api/v1/account/quota-usages': {
+      '/api/v1/account/consumptions': {
         items: [
-          { id: 'usage-1', occurredAt: '2026-09-01T14:32:00+08:00', taskTitle: '任务', amount: 4, status: 'consumed' },
+          { id: 'consumption-1', occurredAt: '2026-09-01T14:32:00+08:00', amountFen: 38, typeLabel: '服务消费', balanceAfterFen: 99007 },
+        ],
+        nextCursor: null,
+      },
+      '/api/v1/account/recharges': {
+        items: [
+          { id: 'recharge-1', createdAt: '2026-09-02T18:06:00+08:00', merchantOrderId: 'R202609021806', amountFen: 5000, status: 'credited', creditedAt: '2026-09-02T18:06:08+08:00', description: '微信支付充值到账', actionLabel: null },
         ],
         nextCursor: null,
       },
@@ -210,7 +233,8 @@ describe('HttpDataProvider', () => {
     })
     const history = await provider.getVideoTasks()
     const account = await provider.getAccountSummary()
-    const usages = await provider.getQuotaUsages()
+    const consumptions = await provider.getConsumptionRecords()
+    const recharges = await provider.getRechargeRecords()
 
     expect(categories.items[0]?.children[0]?.id).toBe('furniture')
     expect(trending.items[0]?.playCount).toBe('1000+')
@@ -228,7 +252,8 @@ describe('HttpDataProvider', () => {
       coverUrl: undefined,
     })
     expect(account.balanceFen).toBe(8650)
-    expect(usages.items[0]?.status).toBe('consumed')
+    expect(consumptions.items[0]?.balanceAfterFen).toBe(99007)
+    expect(recharges.items[0]).toMatchObject({ status: 'credited', amountFen: 5000 })
   })
 
   it('serializes trending filters and cursor parameters', async () => {

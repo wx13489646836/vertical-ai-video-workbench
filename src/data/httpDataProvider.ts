@@ -1,14 +1,15 @@
 import type {
   AccountProfile,
+  ConsumptionRecord,
   GenerationStatus,
   HistoryInputSnapshot,
   HistoryReplacementMapping,
   HistorySourceVideo,
   HotRankingRecord,
   MediaReference,
-  QuotaUsageRecord,
+  RechargeRecord,
+  RechargeRecordStatus,
   StoryboardSegment,
-  UsageStatus,
   VideoAnalysisLookupResult,
   VideoAnalysisResult,
   VideoHistoryRecord,
@@ -205,21 +206,41 @@ function parseAccount(value: unknown): AccountProfile {
   }
 }
 
-function parseUsageStatus(value: string): UsageStatus {
-  if (value === 'consumed' || value === 'refunded') return value
-  throw new Error('字段 status 不是有效额度状态')
+function readFen(record: Record<string, unknown>, key: string): number {
+  const value = readNumber(record, key)
+  if (!Number.isInteger(value) || value < 0) throw new Error(`字段 ${key} 必须是非负整数分`)
+  return value
 }
 
-function parseQuotaUsage(value: unknown): QuotaUsageRecord {
-  if (!isObject(value)) throw new Error('额度记录必须是对象')
-  const amount = readNumber(value, 'amount')
-  if (!Number.isInteger(amount) || amount < 0) throw new Error('字段 amount 必须是非负整数')
+function parseConsumptionRecord(value: unknown): ConsumptionRecord {
+  if (!isObject(value)) throw new Error('消耗记录必须是对象')
   return {
     id: readString(value, 'id'),
     occurredAt: assertIsoDate(readString(value, 'occurredAt'), 'occurredAt'),
-    taskTitle: readString(value, 'taskTitle'),
-    amount,
-    status: parseUsageStatus(readString(value, 'status')),
+    amountFen: readFen(value, 'amountFen'),
+    typeLabel: readString(value, 'typeLabel'),
+    balanceAfterFen: readFen(value, 'balanceAfterFen'),
+  }
+}
+
+function parseRechargeStatus(value: string): RechargeRecordStatus {
+  if (value === 'pending' || value === 'credited' || value === 'failed' || value === 'closed') return value
+  throw new Error('字段 status 不是有效充值状态')
+}
+
+function parseRechargeRecord(value: unknown): RechargeRecord {
+  if (!isObject(value)) throw new Error('充值记录必须是对象')
+  const creditedAt = readNullableString(value, 'creditedAt')
+  if (creditedAt) assertIsoDate(creditedAt, 'creditedAt')
+  return {
+    id: readString(value, 'id'),
+    createdAt: assertIsoDate(readString(value, 'createdAt'), 'createdAt'),
+    merchantOrderId: readString(value, 'merchantOrderId'),
+    amountFen: readFen(value, 'amountFen'),
+    status: parseRechargeStatus(readString(value, 'status')),
+    creditedAt: creditedAt ?? undefined,
+    description: readString(value, 'description'),
+    actionLabel: readNullableString(value, 'actionLabel') ?? undefined,
   }
 }
 
@@ -235,8 +256,10 @@ const parseTrendingPage: RuntimeParser<CursorPage<HotRankingRecord>> = (value) =
   parseCursorPage(value, parseTrendingItem)
 const parseHistoryPage: RuntimeParser<CursorPage<VideoHistoryRecord>> = (value) =>
   parseCursorPage(value, parseVideoTask)
-const parseUsagePage: RuntimeParser<CursorPage<QuotaUsageRecord>> = (value) =>
-  parseCursorPage(value, parseQuotaUsage)
+const parseConsumptionPage: RuntimeParser<CursorPage<ConsumptionRecord>> = (value) =>
+  parseCursorPage(value, parseConsumptionRecord)
+const parseRechargePage: RuntimeParser<CursorPage<RechargeRecord>> = (value) =>
+  parseCursorPage(value, parseRechargeRecord)
 
 function parseWorkspaceSource(value: unknown): WorkspaceSource {
   if (!isObject(value)) throw new Error('分析来源必须是对象')
@@ -305,18 +328,29 @@ function parseAnalysisProduct(
   return undefined
 }
 
+function parseAnalysisProducts(
+  analysis: Record<string, unknown>,
+  rawSegments: unknown[],
+): MediaReference[] {
+  if (Array.isArray(analysis.products)) return analysis.products.map(parseMediaReference)
+  const legacyProduct = parseAnalysisProduct(analysis, rawSegments)
+  return legacyProduct ? [legacyProduct] : []
+}
+
 function parseVideoAnalysis(value: unknown): VideoAnalysisResult {
   if (!isObject(value)) throw new Error('分析结果必须是对象')
   const origin = readString(value, 'origin')
   if (origin !== 'cached' && origin !== 'fresh') throw new Error('分析来源标记无效')
   const rawSegments = readArray(value.segments, 'segments')
+  const products = parseAnalysisProducts(value, rawSegments)
   return {
     analysisId: readString(value, 'analysisId'),
     source: parseWorkspaceSource(value.source),
     sourceUrl: readNullableString(value, 'sourceUrl') ?? undefined,
     analyzedAt: assertIsoDate(readString(value, 'analyzedAt'), 'analyzedAt'),
     origin,
-    product: parseAnalysisProduct(value, rawSegments),
+    products,
+    product: products[0],
     segments: rawSegments.map(parseStoryboardSegment),
   }
 }
@@ -455,17 +489,31 @@ export class HttpDataProvider implements DataProvider {
     })
   }
 
-  getQuotaUsages(
+  getConsumptionRecords(
     cursor?: string | null,
     limit = 20,
     signal?: AbortSignal,
-  ): Promise<CursorPage<QuotaUsageRecord>> {
+  ): Promise<CursorPage<ConsumptionRecord>> {
     const suffix = buildQuery({ cursor, limit })
     return requestApiData({
       baseUrl: this.baseUrl,
-      path: `/api/v1/account/quota-usages${suffix}`,
+      path: `/api/v1/account/consumptions${suffix}`,
       signal,
-      parser: parseUsagePage,
+      parser: parseConsumptionPage,
+    })
+  }
+
+  getRechargeRecords(
+    cursor?: string | null,
+    limit = 20,
+    signal?: AbortSignal,
+  ): Promise<CursorPage<RechargeRecord>> {
+    const suffix = buildQuery({ cursor, limit })
+    return requestApiData({
+      baseUrl: this.baseUrl,
+      path: `/api/v1/account/recharges${suffix}`,
+      signal,
+      parser: parseRechargePage,
     })
   }
 }

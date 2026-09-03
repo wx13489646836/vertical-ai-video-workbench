@@ -1,34 +1,33 @@
 import {
   ArrowRight,
-  ChevronDown,
   Check,
   Database,
   FileVideo,
   ImagePlus,
+  Info,
   Link2,
   LoaderCircle,
-  PencilLine,
-  Plus,
   RefreshCw,
   ScanLine,
   SendHorizontal,
+  ShieldAlert,
   Trash2,
   Upload,
-  UserRound,
-  Warehouse,
   X,
 } from 'lucide-react'
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dataProvider } from '../data/providerInstance'
 import { getErrorMessage } from '../data/dataProvider'
 import {
   clearRemakeSelection,
   readRemakeSelection,
+  REMAKE_SELECTION_EVENT,
 } from '../data/remakeSession'
 import type {
   AnalysisStage,
   MediaReference,
   ProductReferenceImage,
+  RemakeSource,
   StoryboardSegment,
   VideoAnalysisResult,
   WorkspacePhase,
@@ -36,8 +35,8 @@ import type {
 } from '../types'
 
 const workspaceSessionKey = 'ai-video-workbench-workspace-session-v1'
-const minimumProductImages = 1
 const maximumProductImages = 5
+const generationQuotaCost = 1
 
 const analysisStages: AnalysisStage[] = [
   { id: 'frames', label: '提取视频帧', progress: 24 },
@@ -45,18 +44,12 @@ const analysisStages: AnalysisStage[] = [
   { id: 'relations', label: '建立分镜关联', progress: 91 },
 ]
 
-interface ReplacementMappingDraft {
-  id: string
-  originalId: string
-  replacement: MediaReference | null
-}
+type ReplacementKind = 'character' | 'scene'
 
-function createReplacementRow(): ReplacementMappingDraft {
-  return {
-    id: `replacement-row-${crypto.randomUUID()}`,
-    originalId: '',
-    replacement: null,
-  }
+interface ReplacementDraft {
+  type: ReplacementKind
+  original: MediaReference
+  replacement: MediaReference
 }
 
 function uniqueMedia(
@@ -86,29 +79,25 @@ function WorkspaceHeader() {
   )
 }
 
-export function WorkspacePage() {
+export function WorkspacePage({ isActive = true }: { isActive?: boolean }) {
   const [remake, setRemake] = useState(() => readRemakeSelection())
   const [sourceUrl, setSourceUrl] = useState(() => remake?.sourceUrl ?? '')
   const [phase, setPhase] = useState<WorkspacePhase>('source')
   const [source, setSource] = useState<WorkspaceSource | null>(null)
   const [result, setResult] = useState<VideoAnalysisResult | null>(null)
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [analysisStageIndex, setAnalysisStageIndex] = useState(0)
   const [generationProgress, setGenerationProgress] = useState(0)
+  const [generationConfirmOpen, setGenerationConfirmOpen] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [errorKind, setErrorKind] = useState<'cache' | 'analysis'>('analysis')
   const [products, setProducts] = useState<ProductReferenceImage[]>([])
   const [toast, setToast] = useState<string | null>(null)
-  const [replacementOpen, setReplacementOpen] = useState(false)
-  const [replacementType, setReplacementType] = useState<'character' | 'scene'>('character')
-  const [replacementRows, setReplacementRows] = useState<ReplacementMappingDraft[]>(
-    () => [createReplacementRow()],
-  )
-  const [previewProduct, setPreviewProduct] = useState<ProductReferenceImage | null>(null)
+  const [replacementDrafts, setReplacementDrafts] = useState<ReplacementDraft[]>([])
   const videoInputRef = useRef<HTMLInputElement>(null)
   const productInputRef = useRef<HTMLInputElement>(null)
+  const activeProductSlotRef = useRef(0)
   const replacementInputRef = useRef<HTMLInputElement>(null)
-  const activeReplacementRowRef = useRef<string | null>(null)
+  const activeReplacementRef = useRef<{ type: ReplacementKind; original: MediaReference } | null>(null)
   const requestControllerRef = useRef<AbortController | null>(null)
   const stageTimersRef = useRef<number[]>([])
   const generationTimersRef = useRef<number[]>([])
@@ -123,8 +112,6 @@ export function WorkspacePage() {
     () => uniqueMedia(result?.segments ?? [], 'scene'),
     [result],
   )
-  const currentMedia = replacementType === 'character' ? characterMedia : sceneMedia
-
   useEffect(() => {
     sessionStorage.removeItem(workspaceSessionKey)
     clearRemakeSelection()
@@ -135,16 +122,6 @@ export function WorkspacePage() {
     const timer = window.setTimeout(() => setToast(null), 2600)
     return () => window.clearTimeout(timer)
   }, [toast])
-
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      if (previewProduct) setPreviewProduct(null)
-      else if (replacementOpen) closeReplacementSheet()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  })
 
   useEffect(() => () => {
     requestControllerRef.current?.abort()
@@ -175,7 +152,6 @@ export function WorkspacePage() {
     clearAnalysisTimers()
     setResult(nextResult)
     setSource(nextResult.source)
-    setExpandedIds(new Set())
     setPhase('result')
     setErrorMessage('')
   }
@@ -246,7 +222,7 @@ export function WorkspacePage() {
     })
   }
 
-  const resetWorkspace = () => {
+  const resetWorkspace = useCallback(() => {
     requestControllerRef.current?.abort()
     clearAnalysisTimers()
     clearGenerationTimers()
@@ -258,14 +234,33 @@ export function WorkspacePage() {
     customMediaUrlsRef.current.clear()
     sessionStorage.removeItem(workspaceSessionKey)
     setProducts([])
+    setReplacementDrafts([])
     setResult(null)
     setSource(null)
     setSourceUrl('')
-    setExpandedIds(new Set())
     setGenerationProgress(0)
+    setGenerationConfirmOpen(false)
     setPhase('source')
     setErrorMessage('')
-  }
+  }, [products])
+
+  useEffect(() => {
+    if (isActive || (phase !== 'generating' && phase !== 'generated')) return
+    const resetTimer = window.setTimeout(resetWorkspace, 0)
+    return () => window.clearTimeout(resetTimer)
+  }, [isActive, phase, resetWorkspace])
+
+  useEffect(() => {
+    const handleRemakeSelection = (event: Event) => {
+      const nextRemake = (event as CustomEvent<RemakeSource>).detail
+      if (!nextRemake) return
+      resetWorkspace()
+      setRemake(nextRemake)
+      setSourceUrl(nextRemake.sourceUrl)
+    }
+    window.addEventListener(REMAKE_SELECTION_EVENT, handleRemakeSelection)
+    return () => window.removeEventListener(REMAKE_SELECTION_EVENT, handleRemakeSelection)
+  }, [resetWorkspace])
 
   const cancelAnalysis = () => {
     requestControllerRef.current?.abort()
@@ -282,15 +277,6 @@ export function WorkspacePage() {
     else void runAnalysis(source)
   }
 
-  const toggleSegment = (segmentId: string) => {
-    setExpandedIds((current) => {
-      const next = new Set(current)
-      if (next.has(segmentId)) next.delete(segmentId)
-      else next.add(segmentId)
-      return next
-    })
-  }
-
   const handleProductChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.target.files ?? [])]
     event.target.value = ''
@@ -304,123 +290,72 @@ export function WorkspacePage() {
         id: `product-reference-${crypto.randomUUID()}`,
         fileName: file.name,
         imageUrl,
+        productSlot: activeProductSlotRef.current,
       }
     })
     setProducts((current) => [...current, ...nextProducts])
-    if (accepted.length < files.length) setToast(`最多上传${maximumProductImages}张产品图`)
-    else setToast(`已添加${accepted.length}张产品图`)
+    activeProductSlotRef.current = 0
+    if (accepted.length < files.length) setToast(`已应用${accepted.length}张产品图，最多上传${maximumProductImages}张`)
+    else setToast(`已应用${accepted.length}张产品图`)
   }
 
   const removeProduct = (product: ProductReferenceImage) => {
     URL.revokeObjectURL(product.imageUrl)
     productUrlsRef.current.delete(product.imageUrl)
     setProducts((current) => current.filter((item) => item.id !== product.id))
-    setPreviewProduct((current) => current?.id === product.id ? null : current)
-  }
-
-  const resetReplacementForm = () => {
-    replacementRows.forEach((row) => {
-      if (row.replacement?.imageUrl && customMediaUrlsRef.current.has(row.replacement.imageUrl)) {
-        URL.revokeObjectURL(row.replacement.imageUrl)
-        customMediaUrlsRef.current.delete(row.replacement.imageUrl)
-      }
-    })
-    activeReplacementRowRef.current = null
-    setReplacementRows([createReplacementRow()])
-  }
-
-  function closeReplacementSheet() {
-    resetReplacementForm()
-    setReplacementOpen(false)
-  }
-
-  const switchReplacementType = (type: 'character' | 'scene') => {
-    resetReplacementForm()
-    setReplacementType(type)
+    setToast('已移除该产品图，其余配置保持不变')
   }
 
   const handleReplacementUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
-    const rowId = activeReplacementRowRef.current
-    activeReplacementRowRef.current = null
-    if (!file || !file.type.startsWith('image/') || !rowId) return
+    const target = activeReplacementRef.current
+    activeReplacementRef.current = null
+    if (!file || !file.type.startsWith('image/') || !target) return
     const imageUrl = URL.createObjectURL(file)
     customMediaUrlsRef.current.add(imageUrl)
-    setReplacementRows((current) => current.map((row) => {
-      if (row.id !== rowId) return row
-      if (row.replacement?.imageUrl && customMediaUrlsRef.current.has(row.replacement.imageUrl)) {
-        URL.revokeObjectURL(row.replacement.imageUrl)
-        customMediaUrlsRef.current.delete(row.replacement.imageUrl)
+    setReplacementDrafts((current) => {
+      const existing = current.find((draft) =>
+        draft.type === target.type && draft.original.id === target.original.id,
+      )
+      if (existing?.replacement.imageUrl && customMediaUrlsRef.current.has(existing.replacement.imageUrl)) {
+        URL.revokeObjectURL(existing.replacement.imageUrl)
+        customMediaUrlsRef.current.delete(existing.replacement.imageUrl)
       }
-      return {
-        ...row,
+      const nextDraft: ReplacementDraft = {
+        type: target.type,
+        original: target.original,
         replacement: {
-          id: `custom-${replacementType}-${crypto.randomUUID()}`,
+          id: `custom-${target.type}-${crypto.randomUUID()}`,
           label: file.name,
           imageUrl,
         },
       }
-    }))
+      return [
+        ...current.filter((draft) =>
+          draft.type !== target.type || draft.original.id !== target.original.id,
+        ),
+        nextDraft,
+      ]
+    })
+    setToast(`已应用：${target.original.label} → ${file.name}`)
   }
 
-  const changeReplacementOriginal = (rowId: string, originalId: string) => {
-    setReplacementRows((current) => current.map((row) =>
-      row.id === rowId ? { ...row, originalId } : row,
-    ))
-  }
-
-  const addReplacementRow = () => {
-    if (replacementRows.length >= currentMedia.length) return
-    setReplacementRows((current) => [...current, createReplacementRow()])
-  }
-
-  const removeReplacementRow = (rowId: string) => {
-    setReplacementRows((current) => {
-      const target = current.find((row) => row.id === rowId)
-      if (target?.replacement?.imageUrl && customMediaUrlsRef.current.has(target.replacement.imageUrl)) {
+  const removeReplacementDraft = (type: ReplacementKind, originalId: string) => {
+    setReplacementDrafts((current) => {
+      const target = current.find((draft) => draft.type === type && draft.original.id === originalId)
+      if (target?.replacement.imageUrl && customMediaUrlsRef.current.has(target.replacement.imageUrl)) {
         URL.revokeObjectURL(target.replacement.imageUrl)
         customMediaUrlsRef.current.delete(target.replacement.imageUrl)
       }
-      if (current.length === 1) return [createReplacementRow()]
-      return current.filter((row) => row.id !== rowId)
+      return current.filter((draft) => draft.type !== type || draft.original.id !== originalId)
     })
-  }
-
-  const confirmReplacement = () => {
-    if (!result || replacementRows.some((row) => !row.originalId || !row.replacement)) return
-    const replacements = new Map(
-      replacementRows.map((row) => [row.originalId, row.replacement] as const),
-    )
-    let affectedCount = 0
-    const nextSegments = result.segments.map((segment) => {
-      if (replacementType === 'character') {
-        let changed = false
-        const characters = segment.characters.map((character) => {
-          const replacement = replacements.get(character.id)
-          if (!replacement) return character
-          changed = true
-          return replacement
-        })
-        if (!changed) return segment
-        affectedCount += 1
-        return { ...segment, characters }
-      }
-      const replacement = segment.scene ? replacements.get(segment.scene.id) : undefined
-      if (!replacement) return segment
-      affectedCount += 1
-      return { ...segment, scene: replacement }
-    })
-    setResult({ ...result, segments: nextSegments })
-    setReplacementRows([createReplacementRow()])
-    setReplacementOpen(false)
-    setToast(`已应用${replacementRows.length}组替换，更新${affectedCount}个分镜`)
+    setToast('已取消替换，将继续使用原视频素材')
   }
 
   const continueToNextStep = () => {
-    if (products.length < minimumProductImages) return
+    setGenerationConfirmOpen(false)
     clearGenerationTimers()
-    setExpandedIds(new Set())
     setGenerationProgress(8)
     setPhase('generating')
     generationTimersRef.current = [
@@ -436,7 +371,7 @@ export function WorkspacePage() {
 
   return (
     <section className={`page workspace-page${phase === 'result' ? ' workspace-page--has-dock' : ''}`}>
-      <WorkspaceHeader />
+      {phase === 'source' && <WorkspaceHeader />}
 
       {phase === 'source' && (
         <SourceStep
@@ -470,10 +405,26 @@ export function WorkspacePage() {
       {phase === 'result' && result && (
         <StoryboardResult
           result={result}
-          expandedIds={expandedIds}
-          onToggle={toggleSegment}
           onReset={resetWorkspace}
-        />
+        >
+          <HumanCommerceSceneTable
+            products={result.products?.length ? result.products : result.product ? [result.product] : []}
+            productReferences={products}
+            characters={characterMedia}
+            scenes={sceneMedia}
+            replacements={replacementDrafts}
+            onUploadProduct={(slot) => {
+              activeProductSlotRef.current = slot
+              productInputRef.current?.click()
+            }}
+            onRemoveProduct={removeProduct}
+            onUploadReplacement={(type, original) => {
+              activeReplacementRef.current = { type, original }
+              replacementInputRef.current?.click()
+            }}
+            onRemoveReplacement={removeReplacementDraft}
+          />
+        </StoryboardResult>
       )}
 
       {(phase === 'generating' || phase === 'generated') && (
@@ -491,12 +442,15 @@ export function WorkspacePage() {
 
       {phase === 'result' && result && (
         <WorkspaceActionDock
-          products={products}
-          onUpload={() => productInputRef.current?.click()}
-          onPreview={setPreviewProduct}
-          onRemove={removeProduct}
-          onModify={() => setReplacementOpen(true)}
-          onNext={continueToNextStep}
+          onNext={() => setGenerationConfirmOpen(true)}
+        />
+      )}
+
+      {phase === 'result' && generationConfirmOpen && (
+        <GenerationConfirmSheet
+          quotaCost={generationQuotaCost}
+          onCancel={() => setGenerationConfirmOpen(false)}
+          onConfirm={continueToNextStep}
         />
       )}
       <input
@@ -509,41 +463,14 @@ export function WorkspacePage() {
         aria-label="选择产品参考图"
       />
 
-      {replacementOpen && result && (
-        <ReplacementSheet
-          type={replacementType}
-          media={currentMedia}
-          rows={replacementRows}
-          onTypeChange={switchReplacementType}
-          onOriginalChange={changeReplacementOriginal}
-          onUpload={(rowId) => {
-            activeReplacementRowRef.current = rowId
-            replacementInputRef.current?.click()
-          }}
-          onAddRow={addReplacementRow}
-          onRemoveRow={removeReplacementRow}
-          onClose={closeReplacementSheet}
-          onConfirm={confirmReplacement}
-        />
-      )}
       <input
         ref={replacementInputRef}
         type="file"
         accept="image/jpeg,image/png,image/webp"
         className="visually-hidden"
         onChange={handleReplacementUpload}
-        aria-label={`上传新${replacementType === 'character' ? '人物' : '场景'}图片`}
+        aria-label="上传新人物或场景图片"
       />
-
-      {previewProduct && (
-        <div className="workspace-image-preview" role="dialog" aria-modal="true" aria-label="产品图预览">
-          <button type="button" onClick={() => setPreviewProduct(null)} aria-label="关闭预览">
-            <X size={22} />
-          </button>
-          <img src={previewProduct.imageUrl} alt={previewProduct.fileName} />
-          <span>{previewProduct.fileName}</span>
-        </div>
-      )}
 
       {toast && <WorkspaceToast message={toast} />}
     </section>
@@ -733,255 +660,232 @@ function VideoGenerationStep({ complete, progress }: { complete: boolean; progre
 
 function StoryboardResult({
   result,
-  expandedIds,
-  onToggle,
   onReset,
+  children,
 }: {
   result: VideoAnalysisResult
-  expandedIds: Set<string>
-  onToggle: (segmentId: string) => void
   onReset: () => void
+  children: React.ReactNode
 }) {
   return (
     <div className="storyboard-result reveal">
       <div className="storyboard-result__header">
         <div>
           <span>STEP 02 / STORYBOARD</span>
-          <h2>分镜分析结果</h2>
+          <h2>人货场分析结果</h2>
           <p>{result.segments.length} 个分镜 · {new Date(result.analyzedAt).toLocaleString('zh-CN', { hour12: false })}</p>
         </div>
-        <AnalysisProduct product={result.product} />
       </div>
-      <table className="storyboard-table">
-        <thead><tr><th>镜号</th><th>首帧</th><th>分镜内容</th><th><span className="visually-hidden">展开</span></th></tr></thead>
-        <tbody>
-          {result.segments.map((segment) => {
-            const expanded = expandedIds.has(segment.id)
-            return (
-              <Fragment key={segment.id}>
-                <tr className={expanded ? 'is-expanded' : ''}>
-                  <td><span className="storyboard-number">{String(segment.number).padStart(2, '0')}</span></td>
-                  <td><img className="storyboard-first-frame" src={segment.firstFrameUrl} alt={`分镜${segment.number}首帧`} /></td>
-                  <td><button type="button" className="storyboard-content" onClick={() => onToggle(segment.id)}>{segment.content}</button></td>
-                  <td><button type="button" className="storyboard-expand" onClick={() => onToggle(segment.id)} aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'}分镜${segment.number}`}><ChevronDown size={18} /></button></td>
-                </tr>
-                {expanded && (
-                  <tr className="storyboard-detail-row">
-                    <td colSpan={4}>
-                      <div className="storyboard-association-layout">
-                        <div className="storyboard-secondary-media">
-                          <MediaThumb label="关联场景" media={segment.scene} fallbackIcon={<Warehouse size={20} />} />
-                        </div>
-                        <CharacterTrack characters={segment.characters} />
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            )
-          })}
-        </tbody>
-      </table>
+      {children}
       <button type="button" className="storyboard-reselect" onClick={onReset}><RefreshCw size={14} />重新选择原视频</button>
     </div>
   )
 }
 
-function AnalysisProduct({ product }: { product?: MediaReference }) {
-  return (
-    <aside className="analysis-product" aria-label={`关联产品：${product?.label ?? '暂无关联产品'}`}>
-      <div className={!product?.imageUrl ? 'is-empty' : ''}>
-        {product?.imageUrl
-          ? <img src={product.imageUrl} alt={product.label} />
-          : <ImagePlus size={18} />}
-      </div>
-      <p><span>关联产品</span><strong>{product?.label ?? '暂无产品'}</strong></p>
-    </aside>
-  )
-}
-
-function CharacterTrack({ characters }: { characters: MediaReference[] }) {
-  return (
-    <section className="storyboard-character-track" aria-label={`关联角色 ${characters.length}个`}>
-      <div className="storyboard-character-track__heading">
-        <span>关联角色</span>
-        <b>{String(characters.length).padStart(2, '0')}</b>
-      </div>
-      <div className={`storyboard-character-rail${characters.length === 0 ? ' is-empty' : ''}`}>
-        {characters.length > 0 ? characters.map((character, index) => (
-          <article className="storyboard-character" key={`${character.id}-${index}`}>
-            <div>
-              {character.imageUrl
-                ? <img src={character.imageUrl} alt={character.label} />
-                : <UserRound size={20} />}
-              <span>{String(index + 1).padStart(2, '0')}</span>
-            </div>
-            <strong>{character.label}</strong>
-          </article>
-        )) : (
-          <div className="storyboard-character-empty">
-            <UserRound size={20} />
-            <span>该分镜未识别到人物</span>
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function MediaThumb({ label, media, fallbackIcon }: { label: string; media?: MediaReference; fallbackIcon: React.ReactNode }) {
-  return (
-    <div className="storyboard-media">
-      <span>{label}</span>
-      <div className={!media?.imageUrl ? 'is-empty' : ''}>
-        {media?.imageUrl ? <img src={media.imageUrl} alt={media.label} /> : fallbackIcon}
-      </div>
-      <strong>{media?.label ?? '暂无关联素材'}</strong>
-    </div>
-  )
-}
-
 function WorkspaceActionDock({
-  products,
-  onUpload,
-  onPreview,
-  onRemove,
-  onModify,
   onNext,
 }: {
-  products: ProductReferenceImage[]
-  onUpload: () => void
-  onPreview: (product: ProductReferenceImage) => void
-  onRemove: (product: ProductReferenceImage) => void
-  onModify: () => void
   onNext: () => void
 }) {
   return (
     <aside className="workspace-action-dock" aria-label="分镜操作">
-      {products.length > 0 && (
-        <div className="product-reference-tray">
-          <span>产品参考</span>
-          <div>
-            {products.map((product) => (
-              <div className="product-reference-item" key={product.id}>
-                <button type="button" onClick={() => onPreview(product)} aria-label={`预览${product.fileName}`}><img src={product.imageUrl} alt="" /></button>
-                <button type="button" onClick={() => onRemove(product)} aria-label={`删除${product.fileName}`}><X size={11} /></button>
-              </div>
-            ))}
-          </div>
-          <small>至少{minimumProductImages}张 · 建议不同角度</small>
-        </div>
-      )}
       <div className="workspace-action-dock__buttons">
-        <button type="button" className="storyboard-modify-action" onClick={onModify}><PencilLine size={17} />修改</button>
-        <button type="button" className="product-upload-action" onClick={onUpload} disabled={products.length >= maximumProductImages}>
-          <ImagePlus size={18} />
-          <span>上传产品图 <small>至少{minimumProductImages}张</small></span>
-          <b>{products.length}/{maximumProductImages}</b>
-        </button>
-        <button type="button" className="storyboard-next-action" onClick={onNext} disabled={products.length < minimumProductImages}>下一步<ArrowRight size={17} /></button>
+        <button type="button" className="storyboard-next-action" onClick={onNext}>下一步<ArrowRight size={17} /></button>
       </div>
     </aside>
   )
 }
 
-function ReplacementSheet({
-  type,
-  media,
-  rows,
-  onTypeChange,
-  onOriginalChange,
-  onUpload,
-  onAddRow,
-  onRemoveRow,
-  onClose,
+function GenerationConfirmSheet({
+  quotaCost,
+  onCancel,
   onConfirm,
 }: {
-  type: 'character' | 'scene'
-  media: MediaReference[]
-  rows: ReplacementMappingDraft[]
-  onTypeChange: (type: 'character' | 'scene') => void
-  onOriginalChange: (rowId: string, originalId: string) => void
-  onUpload: (rowId: string) => void
-  onAddRow: () => void
-  onRemoveRow: (rowId: string) => void
-  onClose: () => void
+  quotaCost: number
+  onCancel: () => void
   onConfirm: () => void
 }) {
-  const noun = type === 'character' ? '人物' : '场景'
-  const usedOriginalIds = new Set(rows.map((row) => row.originalId).filter(Boolean))
-  const readyCount = rows.filter((row) => row.originalId && row.replacement).length
+  const confirmButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    confirmButtonRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onCancel])
 
   return (
-    <div className="sheet-backdrop workspace-replace-backdrop" role="presentation" onMouseDown={onClose}>
-      <div className="bottom-sheet workspace-replace-sheet" role="dialog" aria-modal="true" aria-labelledby="replace-title" onMouseDown={(event) => event.stopPropagation()}>
-        <span className="bottom-sheet__handle" />
-        <div className="replacement-sheet__title">
-          <div><span>GLOBAL REPLACE</span><h2 id="replace-title">全片素材替换</h2></div>
-          <button type="button" onClick={onClose} aria-label="关闭修改弹窗"><X size={19} /></button>
+    <div
+      className="sheet-backdrop generation-confirm-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onCancel()
+      }}
+    >
+      <section
+        className="bottom-sheet generation-confirm-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="generation-confirm-title"
+        aria-describedby="generation-confirm-description"
+      >
+        <span className="bottom-sheet__handle" aria-hidden="true" />
+        <div className="generation-confirm-sheet__heading">
+          <div className="generation-confirm-sheet__icon"><ShieldAlert size={19} aria-hidden="true" /></div>
+          <div>
+            <span>GENERATION CHECK</span>
+            <h2 id="generation-confirm-title">确认生成视频？</h2>
+          </div>
         </div>
-        <div className="replacement-tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={type === 'character'} className={type === 'character' ? 'is-active' : ''} onClick={() => onTypeChange('character')}><UserRound size={15} />替换人物</button>
-          <button type="button" role="tab" aria-selected={type === 'scene'} className={type === 'scene' ? 'is-active' : ''} onClick={() => onTypeChange('scene')}><Warehouse size={15} />替换场景</button>
+        <p id="generation-confirm-description">确认后将立即创建视频生成任务，请检查当前的人物、产品与场景素材。</p>
+        <div className="generation-quota-summary">
+          <span>本次消耗额度</span>
+          <strong>{quotaCost}<small> 次生成额度</small></strong>
         </div>
+        <div className="bottom-sheet__actions generation-confirm-sheet__actions">
+          <button type="button" onClick={onCancel}>返回检查</button>
+          <button ref={confirmButtonRef} type="button" className="generation-confirm-action" onClick={onConfirm}>确认并生成</button>
+        </div>
+      </section>
+    </div>
+  )
+}
 
-        <div className="replacement-map-heading">
-          <div><span>ORIGINAL</span><strong>选择原{noun}</strong></div>
-          <ArrowRight size={14} aria-hidden="true" />
-          <div><span>REPLACEMENT</span><strong>上传新{noun}</strong></div>
-        </div>
+function HumanCommerceSceneTable({
+  products,
+  productReferences,
+  characters,
+  scenes,
+  replacements,
+  onUploadProduct,
+  onRemoveProduct,
+  onUploadReplacement,
+  onRemoveReplacement,
+}: {
+  products: MediaReference[]
+  productReferences: ProductReferenceImage[]
+  characters: MediaReference[]
+  scenes: MediaReference[]
+  replacements: ReplacementDraft[]
+  onUploadProduct: (slot: number) => void
+  onRemoveProduct: (product: ProductReferenceImage) => void
+  onUploadReplacement: (type: ReplacementKind, original: MediaReference) => void
+  onRemoveReplacement: (type: ReplacementKind, originalId: string) => void
+}) {
+  const findReplacement = (type: ReplacementKind, originalId: string) =>
+    replacements.find((draft) => draft.type === type && draft.original.id === originalId)
 
-        <div className="replacement-map-list">
-          {rows.map((row, index) => {
-            const original = media.find((item) => item.id === row.originalId)
+  const productRows = Array.from({ length: Math.max(2, products.length) }, (_, index) => products[index])
+
+  const renderMaterialRows = (
+    type: ReplacementKind,
+    noun: string,
+    media: MediaReference[],
+  ) => media.length > 0 ? media.map((original, index) => {
+    const draft = findReplacement(type, original.id)
+    return (
+      <tr key={`${type}-${original.id}`}>
+        <td>
+          <span>{String(index + 1).padStart(2, '0')}</span>
+          <div className="material-table__source">
+            <div className="material-table__thumb">
+              {original.imageUrl ? <img src={original.imageUrl} alt="" /> : <ImagePlus size={18} aria-hidden="true" />}
+            </div>
+            <strong>{original.label}</strong>
+          </div>
+        </td>
+        <td aria-hidden="true"><ArrowRight size={14} /></td>
+        <td>
+          <div className="material-table__target">
+            <button type="button" className={draft ? 'has-value' : ''} onClick={() => onUploadReplacement(type, original)}>
+              {draft?.replacement.imageUrl
+                ? <img className="material-table__thumb" src={draft.replacement.imageUrl} alt="" />
+                : <span className="material-table__upload-icon"><Upload size={15} /></span>}
+              <span>{draft?.replacement.label ?? `上传新${noun}`}</span>
+            </button>
+            {draft && (
+              <button type="button" className="material-table__clear" onClick={() => onRemoveReplacement(type, original.id)} aria-label={`清除${original.label}的替换`}>
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+    )
+  }) : (
+    <tr className="material-table__empty"><td colSpan={3}>未识别到{noun}</td></tr>
+  )
+
+  return (
+    <section className="material-table-panel" aria-labelledby="material-table-title">
+      <div className="material-table-panel__title">
+        <div><span>PEOPLE · PRODUCT · PLACE</span><h3 id="material-table-title">人货场素材对照</h3></div>
+        <small>左侧原素材 · 右侧新素材</small>
+      </div>
+      <table className="material-table">
+        <thead><tr><th>原素材</th><th><span className="visually-hidden">替换为</span></th><th>新素材</th></tr></thead>
+        <tbody>
+          <tr className="material-table__group material-table__product-group">
+            <th colSpan={3}>
+              <div className="material-table__group-layout">
+                <div><span>01</span>产品<small>{productRows.length} 项</small></div>
+                <p className="material-upload-hint">
+                  <Info size={12} aria-hidden="true" />
+                  <span><strong>上传要点：</strong>每个产品尽量完整展示多角度、内外细节与包装。</span>
+                </p>
+              </div>
+            </th>
+          </tr>
+          {productRows.map((product, index) => {
+            const slotReferences = productReferences.filter((item) => (item.productSlot ?? 0) === index)
             return (
-              <article className={`replacement-map-row${row.originalId && row.replacement ? ' is-ready' : ''}`} key={row.id}>
-                <span className="replacement-map-row__index">{String(index + 1).padStart(2, '0')}</span>
-                <div className="replacement-source-picker">
-                  <div className="replacement-map-thumb">
-                    {original?.imageUrl ? <img src={original.imageUrl} alt={original.label} /> : <UserRound size={20} />}
+              <tr key={product?.id ?? `product-slot-${index}`}>
+                <td>
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <div className="material-table__source">
+                    <div className="material-table__thumb">
+                      {product?.imageUrl ? <img src={product.imageUrl} alt="" /> : <ImagePlus size={18} aria-hidden="true" />}
+                    </div>
+                    <strong>{product?.label ?? `待识别产品 ${String(index + 1).padStart(2, '0')}`}</strong>
                   </div>
-                  <label>
-                    <span>原{noun}</span>
-                    <span className="replacement-select-wrap">
-                      <select value={row.originalId} onChange={(event) => onOriginalChange(row.id, event.target.value)} aria-label={`第${index + 1}行选择原${noun}`}>
-                        <option value="">点击选择</option>
-                        {media.map((item) => (
-                          <option key={item.id} value={item.id} disabled={item.id !== row.originalId && usedOriginalIds.has(item.id)}>{item.label}</option>
-                        ))}
-                      </select>
-                      <ChevronDown size={13} aria-hidden="true" />
-                    </span>
-                  </label>
-                </div>
-
-                <span className="replacement-map-arrow"><ArrowRight size={18} aria-hidden="true" /></span>
-
-                <button type="button" className={`replacement-target-upload${row.replacement ? ' has-image' : ''}`} onClick={() => onUpload(row.id)} disabled={!row.originalId} aria-label={`第${index + 1}行上传新${noun}`}>
-                  {row.replacement?.imageUrl ? <img src={row.replacement.imageUrl} alt={row.replacement.label} /> : <Upload size={20} />}
-                  <span>{row.replacement ? row.replacement.label : `上传新${noun}`}</span>
-                </button>
-
-                <button type="button" className="replacement-map-remove" onClick={() => onRemoveRow(row.id)} aria-label={`${rows.length === 1 ? '清空' : '删除'}第${index + 1}行`}>
-                  <Trash2 size={13} />
-                </button>
-              </article>
+                </td>
+                <td aria-hidden="true"><ArrowRight size={14} /></td>
+                <td>
+                  <div className="material-table__product-target">
+                    <button type="button" onClick={() => onUploadProduct(index)} disabled={productReferences.length >= maximumProductImages}>
+                      <Upload size={14} />{slotReferences.length > 0 ? `继续上传 ${productReferences.length}/${maximumProductImages}` : '上传新产品'}
+                    </button>
+                    {slotReferences.map((item) => (
+                      <span key={item.id}>
+                        <img className="material-table__thumb" src={item.imageUrl} alt="" />
+                        <b>{item.fileName}</b>
+                        <button type="button" onClick={() => onRemoveProduct(item)} aria-label={`删除${item.fileName}`}><X size={12} /></button>
+                      </span>
+                    ))}
+                  </div>
+                </td>
+              </tr>
             )
           })}
-        </div>
-
-        <button type="button" className="replacement-add-row" onClick={onAddRow} disabled={rows.length >= media.length || media.length === 0}>
-          <Plus size={15} />添加一组替换
-        </button>
-
-        <div className="bottom-sheet__actions replacement-sheet__actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="button" className="replacement-confirm" disabled={readyCount !== rows.length || readyCount === 0} onClick={onConfirm}>
-            确认替换 {readyCount > 0 ? `${readyCount}组` : ''}
-          </button>
-        </div>
-      </div>
-    </div>
+          <tr className="material-table__group material-table__character-group">
+            <th colSpan={3}>
+              <div className="material-table__group-layout">
+                <div><span>02</span>人物<small>{characters.length} 项</small></div>
+                <p className="material-upload-hint">
+                  <Info size={12} aria-hidden="true" />
+                  <span><strong>上传要点：</strong>人物尽量使用全身照，具备正、侧、背三视图为佳。</span>
+                </p>
+              </div>
+            </th>
+          </tr>
+          {renderMaterialRows('character', '人物', characters)}
+          <tr className="material-table__group"><th colSpan={3}><span>03</span>场景<small>{scenes.length} 项</small></th></tr>
+          {renderMaterialRows('scene', '场景', scenes)}
+        </tbody>
+      </table>
+    </section>
   )
 }
 

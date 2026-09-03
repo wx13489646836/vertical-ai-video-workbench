@@ -1,9 +1,10 @@
 import type {
   AccountProfile,
+  ConsumptionRecord,
   HistoryInputSnapshot,
   HistoryReplacementMapping,
   HotRankingRecord,
-  QuotaUsageRecord,
+  RechargeRecord,
   VideoHistoryRecord,
 } from '../types'
 
@@ -222,35 +223,92 @@ export const accountProfile: AccountProfile = {
   quotaUsedThisMonth: 12,
 }
 
-export const usageRecords: QuotaUsageRecord[] = [
+export const consumptionRecords: ConsumptionRecord[] = [
   {
-    id: 'usage-01',
-    occurredAt: '2026-09-01T14:32:00+08:00',
-    taskTitle: '城市夜游氛围片',
-    amount: 4,
-    status: 'consumed',
+    id: 'consumption-01',
+    occurredAt: '2026-09-02T09:58:38+08:00',
+    amountFen: 38,
+    typeLabel: '服务消费',
+    balanceAfterFen: 99007,
   },
   {
-    id: 'usage-02',
-    occurredAt: '2026-08-31T20:18:00+08:00',
-    taskTitle: '秋日穿搭口播',
-    amount: 5,
-    status: 'consumed',
+    id: 'consumption-02',
+    occurredAt: '2026-09-02T09:46:15+08:00',
+    amountFen: 38,
+    typeLabel: '服务消费',
+    balanceAfterFen: 99045,
   },
   {
-    id: 'usage-03',
-    occurredAt: '2026-08-30T11:06:00+08:00',
-    taskTitle: '咖啡店探店短片',
-    amount: 3,
-    status: 'consumed',
+    id: 'consumption-03',
+    occurredAt: '2026-09-02T09:44:31+08:00',
+    amountFen: 45,
+    typeLabel: '服务消费',
+    balanceAfterFen: 99083,
   },
   {
-    id: 'usage-04',
-    occurredAt: '2026-08-28T09:42:00+08:00',
-    taskTitle: '任务生成失败返还',
-    amount: 2,
-    status: 'refunded',
+    id: 'consumption-04',
+    occurredAt: '2026-07-02T10:39:27+08:00',
+    amountFen: 4,
+    typeLabel: '服务消费',
+    balanceAfterFen: 99128,
   },
+  ...[
+    '2026-06-26T17:01:20+08:00',
+    '2026-06-26T17:00:27+08:00',
+    '2026-06-26T16:44:43+08:00',
+    '2026-06-26T16:44:19+08:00',
+    '2026-06-26T16:27:12+08:00',
+    '2026-06-26T16:25:53+08:00',
+    '2026-06-26T16:17:57+08:00',
+    '2026-06-26T16:10:29+08:00',
+  ].map((occurredAt, index): ConsumptionRecord => ({
+    id: `consumption-${String(index + 5).padStart(2, '0')}`,
+    occurredAt,
+    amountFen: [2, 3, 6, 6, 2, 2, 2, 5][index] ?? 2,
+    typeLabel: '服务消费',
+    balanceAfterFen: [99132, 99134, 99137, 99143, 99149, 99151, 99153, 99155][index] ?? 99155,
+  })),
+]
+
+export const rechargeRecords: RechargeRecord[] = [
+  {
+    id: 'recharge-01',
+    createdAt: '2026-09-02T16:26:04+08:00',
+    merchantOrderId: 'R202609021626046B39E7B4098841998',
+    amountFen: 1,
+    status: 'closed',
+    description: '订单已关闭或超时',
+  },
+  {
+    id: 'recharge-02',
+    createdAt: '2026-09-02T16:21:27+08:00',
+    merchantOrderId: 'R2026090216212756209A1E953A4392A',
+    amountFen: 1,
+    status: 'failed',
+    description: '微信支付下单失败',
+  },
+  {
+    id: 'recharge-03',
+    createdAt: '2026-09-01T14:32:00+08:00',
+    merchantOrderId: 'R20260901143200FC20860914',
+    amountFen: 5000,
+    status: 'credited',
+    creditedAt: '2026-09-01T14:32:08+08:00',
+    description: '微信支付充值到账',
+  },
+  ...Array.from({ length: 8 }, (_, index): RechargeRecord => {
+    const day = String(28 - index).padStart(2, '0')
+    const createdAt = `2026-08-${day}T12:00:00+08:00`
+    return {
+      id: `recharge-${String(index + 4).padStart(2, '0')}`,
+      createdAt,
+      merchantOrderId: `R202608${day}120000FC2086${String(index + 1).padStart(4, '0')}`,
+      amountFen: [1000, 2000, 5000, 10000, 2000, 5000, 1000, 2000][index] ?? 1000,
+      status: 'credited',
+      creditedAt: `2026-08-${day}T12:00:08+08:00`,
+      description: '微信支付充值到账',
+    }
+  }),
 ]
 
 type ClothingSnapshotInput = Omit<

@@ -1,7 +1,8 @@
 import type {
   AccountProfile,
+  ConsumptionRecord,
   HotRankingRecord,
-  QuotaUsageRecord,
+  RechargeRecord,
   VideoAnalysisLookupResult,
   VideoAnalysisResult,
   VideoHistoryRecord,
@@ -56,11 +57,16 @@ export interface DataProvider {
   deleteVideoTask(id: string, signal?: AbortSignal): Promise<void>
   getDownloadTicket(id: string, signal?: AbortSignal): Promise<DownloadTicket>
   getAccountSummary(signal?: AbortSignal): Promise<AccountProfile>
-  getQuotaUsages(
+  getConsumptionRecords(
     cursor?: string | null,
     limit?: number,
     signal?: AbortSignal,
-  ): Promise<CursorPage<QuotaUsageRecord>>
+  ): Promise<CursorPage<ConsumptionRecord>>
+  getRechargeRecords(
+    cursor?: string | null,
+    limit?: number,
+    signal?: AbortSignal,
+  ): Promise<CursorPage<RechargeRecord>>
   resetDemoHistory?(): Promise<void>
 }
 

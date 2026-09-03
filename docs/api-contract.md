@@ -157,21 +157,40 @@
 }
 ```
 
-### `GET /api/v1/account/quota-usages?cursor=&limit=20`
+### `GET /api/v1/account/consumptions?cursor=&limit=10`
 
 `data` 使用通用游标页，记录结构如下：
 
 ```json
 {
-  "id": "usage-id",
-  "occurredAt": "2026-09-01T14:32:00+08:00",
-  "taskTitle": "城市夜游氛围片",
-  "amount": 4,
-  "status": "consumed | refunded"
+  "id": "consumption-id",
+  "occurredAt": "2026-09-02T09:58:38+08:00",
+  "amountFen": 38,
+  "typeLabel": "服务消费",
+  "balanceAfterFen": 99007
 }
 ```
 
-`amount` 始终为非负整数，前端根据 `status` 显示减号或加号。
+`amountFen` 与 `balanceAfterFen` 均使用整数分，前端将消耗金额显示为负数。
+
+### `GET /api/v1/account/recharges?cursor=&limit=10`
+
+`data` 使用通用游标页，记录结构如下：
+
+```json
+{
+  "id": "recharge-id",
+  "createdAt": "2026-09-01T14:32:00+08:00",
+  "merchantOrderId": "R20260901143200FC20860914",
+  "amountFen": 5000,
+  "status": "pending | credited | failed | closed",
+  "creditedAt": "2026-09-01T14:32:08+08:00",
+  "description": "微信支付充值到账",
+  "actionLabel": null
+}
+```
+
+金额统一使用整数分；`creditedAt` 未到账时为 `null`；`actionLabel` 无操作时为 `null`。
 
 ## 前端切换方式
 
